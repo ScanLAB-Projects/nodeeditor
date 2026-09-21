@@ -642,11 +642,25 @@ mouseDoubleClickEvent(QGraphicsSceneMouseEvent* event)
 
 void
 GroupGraphicsObject::
+ToggleCollapse()
+{
+  Collapse();
+  collapseButtonWidget->setChecked(collapsed);
+}
+
+
+void
+GroupGraphicsObject::
 contextMenuEvent(QGraphicsSceneContextMenuEvent* event)
 {
   QMenu menu;
+  QAction* collapseAction = menu.addAction(collapsed ? "Expand" : "Collapse");
+  collapseAction->setShortcut(Qt::Key_Tab);   // shown only; Tab is handled by FlowView
   QAction* colourAction = menu.addAction("Colour...");
-  if (menu.exec(event->screenPos()) == colourAction)
+  QAction* chosen = menu.exec(event->screenPos());
+  if (chosen == collapseAction)
+    ToggleCollapse();
+  else if (chosen == colourAction)
   {
     QColor c = QColorDialog::getColor(QColor(r, g, b), nullptr, "Group colour");
     if (c.isValid())

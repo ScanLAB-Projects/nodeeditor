@@ -21,6 +21,7 @@
 #include "DataModelRegistry.hpp"
 #include "Node.hpp"
 #include "Group.hpp"
+#include "GroupGraphicsObject.hpp"
 #include "NodeGraphicsObject.hpp"
 #include "ConnectionGraphicsObject.hpp"
 #include "StyleCollection.hpp"
@@ -33,6 +34,7 @@ using QtNodes::FlowScene;
 using QtNodes::Connection;
 using QtNodes::NodeConnectionInteraction;
 using QtNodes::NodeGraphicsObject;
+using QtNodes::GroupGraphicsObject;
 
 bool FlowView::s_blender = true;
 bool FlowView::s_trackpadScroll = true;
@@ -826,6 +828,37 @@ void FlowView::duplicateSelectedNode()
   QJsonObject selectionJson = selectionToJson();
   jsonToSceneMousePos(selectionJson);
 }
+
+
+bool
+FlowView::
+event(QEvent *event)
+{
+  // Tab collapses/expands the group under the mouse. Handled here because Qt would otherwise use
+  // Tab to move keyboard focus before keyPressEvent sees it.
+  if (event->type() == QEvent::KeyPress)
+  {
+    QKeyEvent *k = static_cast<QKeyEvent*>(event);
+    if (k->key() == Qt::Key_Tab && !(k->modifiers() & (Qt::ControlModifier | Qt::AltModifier)))
+    {
+      QPoint vp = viewport()->mapFromGlobal(QCursor::pos());
+      for (QGraphicsItem *item : items(vp))
+      {
+        for (QGraphicsItem *it = item; it; it = it->parentItem())
+        {
+          if (auto *g = dynamic_cast<GroupGraphicsObject*>(it))
+          {
+            g->ToggleCollapse();
+            return true;
+          }
+        }
+      }
+      return true;   // over empty space: swallow Tab rather than jump focus out of the editor
+    }
+  }
+  return QGraphicsView::event(event);
+}
+
 
 
 void
