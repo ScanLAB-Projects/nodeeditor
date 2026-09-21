@@ -644,5 +644,18 @@ void
 GroupGraphicsObject::
 contextMenuEvent(QGraphicsSceneContextMenuEvent* event)
 {
-
+  QMenu menu;
+  QAction* colourAction = menu.addAction("Colour...");
+  if (menu.exec(event->screenPos()) == colourAction)
+  {
+    QColor c = QColorDialog::getColor(QColor(r, g, b), nullptr, "Group colour");
+    if (c.isValid())
+    {
+      r = c.red();
+      g = c.green();
+      b = c.blue();
+      update();
+    }
+  }
+  event->accept();
 }
