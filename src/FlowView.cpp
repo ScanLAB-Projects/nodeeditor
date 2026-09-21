@@ -38,11 +38,13 @@ using QtNodes::GroupGraphicsObject;
 
 bool FlowView::s_blender = true;
 bool FlowView::s_trackpadScroll = true;
+double FlowView::s_trackpadSpeed = 2.0;
 
-void FlowView::setNavigation(bool blender, bool trackpadScroll)
+void FlowView::setNavigation(bool blender, bool trackpadScroll, double trackpadSpeed)
 {
   s_blender = blender;
   s_trackpadScroll = trackpadScroll;
+  s_trackpadSpeed = trackpadSpeed;
 }
 
 FlowView::
@@ -426,6 +428,8 @@ wheelEvent(QWheelEvent *event)
     // Trackpads send pixelDelta on macOS; over RDP they arrive as fine-grained angleDelta.
     QPointF d = !event->pixelDelta().isNull() ? QPointF(event->pixelDelta())
                                               : QPointF(event->angleDelta()) / 4.0;
+    if (s_trackpadScroll)
+      d *= s_trackpadSpeed;                            // Preferences > Navigation > Trackpad speed
     if (d.isNull())
     {
       event->ignore();
