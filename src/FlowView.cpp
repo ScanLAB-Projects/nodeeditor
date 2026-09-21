@@ -15,6 +15,7 @@
 #include <QDebug>
 #include <iostream>
 #include <cmath>
+#include <algorithm>
 
 #include "FlowScene.hpp"
 #include "DataModelRegistry.hpp"
@@ -33,6 +34,15 @@ using QtNodes::Connection;
 using QtNodes::NodeConnectionInteraction;
 using QtNodes::NodeGraphicsObject;
 
+bool FlowView::s_blender = true;
+bool FlowView::s_trackpadScroll = true;
+
+void FlowView::setNavigation(bool blender, bool trackpadScroll)
+{
+  s_blender = blender;
+  s_trackpadScroll = trackpadScroll;
+}
+
 FlowView::
 FlowView(QWidget *parent)
   : QGraphicsView(parent)
@@ -40,7 +50,7 @@ FlowView(QWidget *parent)
   , _deleteSelectionAction(Q_NULLPTR)
   , _scene(Q_NULLPTR)
 {
-  setDragMode(QGraphicsView::ScrollHandDrag);
+  setDragMode(s_blender ? QGraphicsView::RubberBandDrag : QGraphicsView::ScrollHandDrag);
   setRenderHint(QPainter::Antialiasing);
 
   auto const &flowViewStyle = StyleCollection::flowViewStyle();
@@ -409,6 +419,24 @@ void
 FlowView::
 wheelEvent(QWheelEvent *event)
 {
+  if (s_blender)
+  {
+    // Trackpads send pixelDelta on macOS; over RDP they arrive as fine-grained angleDelta.
+    QPointF d = !event->pixelDelta().isNull() ? QPointF(event->pixelDelta())
+                                              : QPointF(event->angleDelta()) / 4.0;
+    if (d.isNull())
+    {
+      event->ignore();
+      return;
+    }
+    if (!s_trackpadScroll || (event->modifiers() & Qt::ControlModifier))
+      zoomBy(std::pow(1.2, d.y() / 30.0));             // one wheel notch (120) = 1.2x, like scaleUp()
+    else
+      panByView(d);                                     // two-finger swipe pans
+    event->accept();
+    return;
+  }
+
   QPoint delta = event->angleDelta();
 
   if (delta.y() == 0)
@@ -424,6 +452,45 @@ wheelEvent(QWheelEvent *event)
   else
     scaleDown();
 
+}
+
+
+void
+FlowView::
+panByView(QPointF viewDelta)
+{
+  // content follows the fingers / mouse: move the visible scene rect the other way
+  QPointF d(-viewDelta.x() / transform().m11(), -viewDelta.y() / transform().m22());
+  setSceneRect(sceneRect().translated(d.x(), d.y()));
+}
+
+
+void
+FlowView::
+zoomBy(double factor)
+{
+  double s = transform().m11() * factor;
+  if (s > 2.0)  factor = 2.0 / transform().m11();     // same maximum as scaleUp()
+  if (s < 0.05) factor = 0.05 / transform().m11();
+  scale(factor, factor);                             // AnchorUnderMouse: zooms at the cursor
+}
+
+
+void
+FlowView::
+frameAll()
+{
+  if (!_scene || _scene->items().isEmpty())
+    return;
+  QRectF r = _scene->itemsBoundingRect();
+  QPointF difference = r.center() - sceneRect().center();
+  setSceneRect(sceneRect().translated(difference.x(), difference.y()));
+  double fit = 0.9 * std::min(viewport()->width() / std::max(r.width(), 1.0),
+                              viewport()->height() / std::max(r.height(), 1.0));
+  fit = std::max(0.05, std::min(fit, 2.0));
+  setTransformationAnchor(QGraphicsView::AnchorViewCenter);
+  scale(fit / transform().m11(), fit / transform().m22());
+  setTransformationAnchor(QGraphicsView::AnchorUnderMouse);
 }
 
 
@@ -765,10 +832,18 @@ void
 FlowView::
 keyPressEvent(QKeyEvent *event)
 {
+  if (s_blender && event->key() == Qt::Key_Home)
+  {
+    frameAll();
+    event->accept();
+    return;
+  }
+
   switch (event->key())
   {
     case Qt::Key_Shift:
-      setDragMode(QGraphicsView::RubberBandDrag);
+      if (!s_blender)
+        setDragMode(QGraphicsView::RubberBandDrag);
       break;
     default:
       break;
@@ -785,7 +860,8 @@ keyReleaseEvent(QKeyEvent *event)
   switch (event->key())
   {
     case Qt::Key_Shift:
-      setDragMode(QGraphicsView::ScrollHandDrag);
+      if (!s_blender)
+        setDragMode(QGraphicsView::ScrollHandDrag);
       break;
 
     default:
@@ -799,6 +875,21 @@ void
 FlowView::
 mousePressEvent(QMouseEvent *event)
 {
+  if (s_blender)
+  {
+    setDragMode(QGraphicsView::RubberBandDrag);   // left-drag on empty space = box select
+    bool navButton = event->button() == Qt::MiddleButton ||
+                     (event->button() == Qt::LeftButton && (event->modifiers() & Qt::AltModifier));
+    if (navButton)
+    {
+      _navDrag = (event->modifiers() & Qt::ControlModifier) ? NavDrag::Zoom : NavDrag::Pan;
+      _navLastPos = event->pos();
+      event->accept();
+      return;
+    }
+  }
+  if (!s_blender && dragMode() == QGraphicsView::RubberBandDrag && !(event->modifiers() & Qt::ShiftModifier))
+    setDragMode(QGraphicsView::ScrollHandDrag);
   QGraphicsView::mousePressEvent(event);
   if (event->button() == Qt::LeftButton)
   {
@@ -811,8 +902,19 @@ void
 FlowView::
 mouseMoveEvent(QMouseEvent *event)
 {
+  if (_navDrag != NavDrag::None)
+  {
+    QPoint d = event->pos() - _navLastPos;
+    _navLastPos = event->pos();
+    if (_navDrag == NavDrag::Pan)
+      panByView(d);
+    else
+      zoomBy(std::pow(1.01, -d.y()));             // drag up = zoom in
+    event->accept();
+    return;
+  }
   QGraphicsView::mouseMoveEvent(event);
-  if (scene()->mouseGrabberItem() == nullptr && event->buttons() == Qt::LeftButton)
+  if (!s_blender && scene()->mouseGrabberItem() == nullptr && event->buttons() == Qt::LeftButton)
   {
     // Make sure shift is not being pressed
     if ((event->modifiers() & Qt::ShiftModifier) == 0)
@@ -821,6 +923,20 @@ mouseMoveEvent(QMouseEvent *event)
       setSceneRect(sceneRect().translated(difference.x(), difference.y()));
     }
   }
+}
+
+
+void
+FlowView::
+mouseReleaseEvent(QMouseEvent *event)
+{
+  if (_navDrag != NavDrag::None)
+  {
+    _navDrag = NavDrag::None;
+    event->accept();
+    return;
+  }
+  QGraphicsView::mouseReleaseEvent(event);
 }
 
 

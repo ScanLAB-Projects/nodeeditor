@@ -36,6 +36,15 @@ public:
   void goToNode(NodeGraphicsObject *node);
   void goToNodeID(QUuid ID);
 
+  /// Navigation style for every FlowView (set from the app's preferences).
+  /// blender: middle-drag / Alt+left-drag pans, Ctrl+(that) zooms, left-drag on empty space box-selects,
+  /// Home frames all nodes. trackpadScroll: two-finger scroll pans and Ctrl+scroll (pinch) zooms;
+  /// otherwise the wheel zooms at the cursor. blender=false keeps the original behaviour.
+  static void setNavigation(bool blender, bool trackpadScroll);
+
+  /// Pan and zoom so every node is visible.
+  void frameAll();
+
 
 public slots:
 
@@ -65,6 +74,8 @@ protected:
 
   void mouseMoveEvent(QMouseEvent *event) override;
 
+  void mouseReleaseEvent(QMouseEvent *event) override;
+
   void drawBackground(QPainter* painter, const QRectF& r) override;
 
   void showEvent(QShowEvent *event) override;
@@ -92,6 +103,15 @@ private:
   std::vector<QAction*> anchorActions;
 
   QPointF _clickPos;
+
+  enum class NavDrag { None, Pan, Zoom };
+  NavDrag _navDrag = NavDrag::None;
+  QPoint _navLastPos;
+  void panByView(QPointF viewDelta);
+  void zoomBy(double factor);
+
+  static bool s_blender;
+  static bool s_trackpadScroll;
 
   FlowScene* _scene;
 };
