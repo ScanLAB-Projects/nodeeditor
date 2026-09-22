@@ -80,7 +80,7 @@ void FlowView::applyRenderMode()
 bool FlowView::s_blender = true;
 bool FlowView::s_trackpadScroll = true;
 double FlowView::s_trackpadSpeed = 4.0;
-double FlowView::s_zoomSpeed = 1.0;
+double FlowView::s_zoomSpeed = 2.0;
 
 void FlowView::setNavigation(bool blender, bool trackpadScroll, double trackpadSpeed, double zoomSpeed)
 {

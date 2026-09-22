@@ -45,7 +45,7 @@ public:
   /// Home frames all nodes. trackpadScroll: two-finger scroll pans and Ctrl+scroll (pinch) zooms;
   /// otherwise the wheel zooms at the cursor. blender=false keeps the original behaviour.
   /// trackpadSpeed scales trackpad pan; zoomSpeed scales zoom (wheel, Ctrl+scroll, pinch) and is capped per step.
-  static void setNavigation(bool blender, bool trackpadScroll, double trackpadSpeed = 4.0, double zoomSpeed = 1.0);
+  static void setNavigation(bool blender, bool trackpadScroll, double trackpadSpeed = 4.0, double zoomSpeed = 2.0);
 
   /// Pan and zoom so every node is visible.
   void frameAll();
