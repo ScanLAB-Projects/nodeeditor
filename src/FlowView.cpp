@@ -121,7 +121,19 @@ FlowView(QWidget *parent)
   _interactionTimer->setInterval(150);
   connect(_interactionTimer, &QTimer::timeout, [this]() {
     setRenderHint(QPainter::Antialiasing, true);
+    setZoomCache(false);
     viewport()->update();
+  });
+
+  _zoomTimer = new QTimer(this);
+  _zoomTimer->setInterval(16);
+  connect(_zoomTimer, &QTimer::timeout, [this]() {
+    // ease: apply 35% of what's left each frame; finish when it's negligible
+    double step = std::abs(_pendingZoomLog) < 0.002 ? _pendingZoomLog : 0.35 * _pendingZoomLog;
+    _pendingZoomLog -= step;
+    zoomBy(std::exp(step));
+    if (_pendingZoomLog == 0.0)
+      _zoomTimer->stop();
   });
  
   
@@ -490,7 +502,7 @@ wheelEvent(QWheelEvent *event)
     {
       // zoom: proportional to the step, capped at one wheel notch so coarse RDP steps can't jump
       double steps = std::max(-1.0, std::min(1.0, d.y() / 30.0)) * s_zoomSpeed;
-      zoomBy(std::pow(1.1, steps));                   // one notch = 1.1x at zoom speed 1
+      zoomSmooth(std::pow(1.2, steps));               // one notch = 1.2x at zoom speed 1, animated
     }
     else
       panByView(d * s_trackpadSpeed);                   // two-finger swipe pans (Trackpad speed)
@@ -558,8 +570,36 @@ zoomBy(double factor)
   if (s > 2.0)  factor = 2.0 / transform().m11();     // same maximum as scaleUp()
   if (s < 0.05) factor = 0.05 / transform().m11();
   beginInteraction();
+  setZoomCache(true);
   scale(factor, factor);                             // AnchorUnderMouse: zooms at the cursor
   updateLevelOfDetail();
+}
+
+
+void
+FlowView::
+zoomSmooth(double factor)
+{
+  setZoomCache(true);
+  _pendingZoomLog += std::log(factor);
+  // don't queue up more than ~3 notches, so a burst of events can't run away
+  _pendingZoomLog = std::max(-0.55, std::min(0.55, _pendingZoomLog));
+  if (!_zoomTimer->isActive())
+    _zoomTimer->start();
+}
+
+
+void
+FlowView::
+setZoomCache(bool on)
+{
+  if (on == _zoomCache || !_scene)
+    return;
+  _zoomCache = on;
+  // Device cache is exact but is re-rendered at every zoom level; item cache just scales the image.
+  for (auto &n : _scene->nodes())
+    n.second->nodeGraphicsObject().setCacheMode(on ? QGraphicsItem::ItemCoordinateCache
+                                                    : QGraphicsItem::DeviceCoordinateCache);
 }
 
 

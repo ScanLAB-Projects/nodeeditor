@@ -132,6 +132,11 @@ private:
   void updateLevelOfDetail();
   void beginInteraction();          // anti-aliasing off while panning/zooming, back on when idle
   QTimer *_interactionTimer = nullptr;
+  QTimer *_zoomTimer = nullptr;      // animates towards the accumulated zoom target
+  double _pendingZoomLog = 0;         // log of the zoom still to apply
+  bool _zoomCache = false;            // nodes on the cheap ItemCoordinateCache while zooming
+  void zoomSmooth(double factor);
+  void setZoomCache(bool on);
   bool _lowDetail = false;
   double _lastFrameMs = 0;
   static std::set<FlowView*> s_views;
