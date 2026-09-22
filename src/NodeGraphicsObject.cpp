@@ -105,6 +105,15 @@ node() const
 
 void
 NodeGraphicsObject::
+setLowDetail(bool low)
+{
+  if (_proxyWidget && _proxyWidget->isVisible() == low)
+    _proxyWidget->setVisible(!low);
+}
+
+
+void
+NodeGraphicsObject::
 embedQWidget()
 {
   NodeGeometry & geom = _node.nodeGeometry();

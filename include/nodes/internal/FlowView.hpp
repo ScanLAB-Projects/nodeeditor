@@ -1,9 +1,13 @@
 #pragma once
 
 #include <QtWidgets/QGraphicsView>
+#include <QtCore/QElapsedTimer>
+#include <set>
 
 #include "Export.hpp"
   
+class QTimer;
+
 namespace QtNodes
 {
 
@@ -45,6 +49,13 @@ public:
   /// Pan and zoom so every node is visible.
   void frameAll();
 
+  /// Drawing: 0 = auto (software over Remote Desktop, OpenGL otherwise), 1 = OpenGL, 2 = software.
+  static void setRenderMode(int mode);
+  /// Overlay the last frame's draw time (ms) in the corner, to measure optimisations.
+  static void setShowFrameTime(bool show);
+  /// Below this zoom, embedded widgets are hidden (plain node boxes).
+  static constexpr double lowDetailZoom = 0.4;
+
 
 public slots:
 
@@ -80,6 +91,10 @@ protected:
 
   void drawBackground(QPainter* painter, const QRectF& r) override;
 
+  void drawForeground(QPainter* painter, const QRectF& r) override;
+
+  void paintEvent(QPaintEvent *event) override;
+
   void showEvent(QShowEvent *event) override;
 
   void addAnchor(int index);
@@ -111,6 +126,16 @@ private:
   QPoint _navLastPos;
   void panByView(QPointF viewDelta);
   void zoomBy(double factor);
+
+  void applyRenderMode();
+  void updateLevelOfDetail();
+  void beginInteraction();          // anti-aliasing off while panning/zooming, back on when idle
+  QTimer *_interactionTimer = nullptr;
+  bool _lowDetail = false;
+  double _lastFrameMs = 0;
+  static std::set<FlowView*> s_views;
+  static int s_renderMode;
+  static bool s_showFrameTime;
 
   static bool s_blender;
   static bool s_trackpadScroll;

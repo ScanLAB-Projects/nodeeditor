@@ -2,6 +2,7 @@
 
 #include <iostream>
 #include <cstdlib>
+#include <algorithm>
 
 #include <QtWidgets/QtWidgets>
 #include <QtWidgets/QGraphicsEffect>
@@ -76,10 +77,11 @@ GroupGraphicsObject(FlowScene &scene, Group& group)
   _proxyWidget->setWidget(nameLineEdit);
   _proxyWidget->setPos(QPointF(sizeX/2 - _proxyWidget->size().width()/2, 0));
 
-  collapseButtonWidget = new QPushButton("X");
+  collapseButtonWidget = new QPushButton(QString(QChar(0x2630)));   // hamburger icon (U+2630)
+  collapseButtonWidget->setToolTip("Collapse / expand (Tab, or right-click the group)");
   collapseButtonWidget->setCheckable(true);
   _collapseButton->setWidget(collapseButtonWidget);
-  _collapseButton->setPos(QPointF(sizeX - _collapseButton->size().width(), 0));
+  _collapseButton->setPos(QPointF(0, 0));   // always top-left
 
   connect(collapseButtonWidget, &QPushButton::clicked, this, [this](int state){
     Collapse();
@@ -184,8 +186,8 @@ Collapse()
     //Do resize
     sizeX = 500;
     sizeY = numInOut * spacing;
-    _proxyWidget->setPos(QPointF(sizeX/2 - _proxyWidget->size().width()/2, 0));
-    _collapseButton->setPos(QPointF(sizeX - _collapseButton->size().width(), 0));
+    _proxyWidget->setPos(QPointF(std::max((qreal)(sizeX/2 - _proxyWidget->size().width()/2), (qreal)(_collapseButton->size().width() + 4)), 0));
+    _collapseButton->setPos(QPointF(0, 0));   // always top-left
 
 
     //Sets the inside nodes invisible
@@ -234,8 +236,8 @@ Collapse()
     sizeX = savedSizeX;
     sizeY = savedSizeY;
     
-    _proxyWidget->setPos(QPointF(sizeX/2 - _proxyWidget->size().width()/2, 0));
-    _collapseButton->setPos(QPointF(sizeX - _collapseButton->size().width(), 0));
+    _proxyWidget->setPos(QPointF(std::max((qreal)(sizeX/2 - _proxyWidget->size().width()/2), (qreal)(_collapseButton->size().width() + 4)), 0));
+    _collapseButton->setPos(QPointF(0, 0));   // always top-left
 
     //Sets the inside nodes invisible
     for(int i=0; i<childItems().size(); i++)
@@ -546,8 +548,8 @@ mouseMoveEvent(QGraphicsSceneMouseEvent * event)
     prepareGeometryChange();
     sizeX += diff;
     update();
-    _proxyWidget->setPos(QPointF(sizeX/2 - _proxyWidget->size().width()/2, 0));
-    _collapseButton->setPos(QPointF(sizeX - _collapseButton->size().width(), 0));
+    _proxyWidget->setPos(QPointF(std::max((qreal)(sizeX/2 - _proxyWidget->size().width()/2), (qreal)(_collapseButton->size().width() + 4)), 0));
+    _collapseButton->setPos(QPointF(0, 0));   // always top-left
     event->accept();
   }
   else if(isResizingY) {
@@ -555,8 +557,8 @@ mouseMoveEvent(QGraphicsSceneMouseEvent * event)
     prepareGeometryChange();
     sizeY += diff;
     update();
-    _proxyWidget->setPos(QPointF(sizeX/2 - _proxyWidget->size().width()/2, 0));
-    _collapseButton->setPos(QPointF(sizeX - _collapseButton->size().width(), 0));
+    _proxyWidget->setPos(QPointF(std::max((qreal)(sizeX/2 - _proxyWidget->size().width()/2), (qreal)(_collapseButton->size().width() + 4)), 0));
+    _collapseButton->setPos(QPointF(0, 0));   // always top-left
     event->accept();
   } else if(isResizingXY) {
     auto diff = event->pos() - event->lastPos();
@@ -564,8 +566,8 @@ mouseMoveEvent(QGraphicsSceneMouseEvent * event)
     sizeX += diff.x();
     sizeY += diff.y();
     update();
-    _proxyWidget->setPos(QPointF(sizeX/2 - _proxyWidget->size().width()/2, 0));
-    _collapseButton->setPos(QPointF(sizeX - _collapseButton->size().width(), 0));
+    _proxyWidget->setPos(QPointF(std::max((qreal)(sizeX/2 - _proxyWidget->size().width()/2), (qreal)(_collapseButton->size().width() + 4)), 0));
+    _collapseButton->setPos(QPointF(0, 0));   // always top-left
     event->accept();    
   } else {
     _scene.groupMoved(_group, pos());

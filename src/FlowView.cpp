@@ -15,6 +15,10 @@
 #include <QDebug>
 #include <iostream>
 #include <cmath>
+#ifdef _WIN32
+// Just the one call, instead of <windows.h> (whose min/max/near/far macros break this file).
+extern "C" __declspec(dllimport) int __stdcall GetSystemMetrics(int nIndex);
+#endif
 #include <algorithm>
 
 #include "FlowScene.hpp"
@@ -35,6 +39,43 @@ using QtNodes::Connection;
 using QtNodes::NodeConnectionInteraction;
 using QtNodes::NodeGraphicsObject;
 using QtNodes::GroupGraphicsObject;
+
+std::set<FlowView*> FlowView::s_views;
+int FlowView::s_renderMode = 0;
+bool FlowView::s_showFrameTime = false;
+
+static bool remoteDesktopSession()
+{
+#ifdef _WIN32
+  return GetSystemMetrics(0x1000 /* SM_REMOTESESSION */) != 0;
+#else
+  return false;
+#endif
+}
+
+void FlowView::setRenderMode(int mode)
+{
+  s_renderMode = mode;
+  for (FlowView *v : s_views)
+    v->applyRenderMode();
+}
+
+void FlowView::setShowFrameTime(bool show)
+{
+  s_showFrameTime = show;
+  for (FlowView *v : s_views)
+    v->viewport()->update();
+}
+
+void FlowView::applyRenderMode()
+{
+  bool gl = s_renderMode == 1 || (s_renderMode == 0 && !remoteDesktopSession());
+  bool isGL = qobject_cast<QGLWidget*>(viewport()) != nullptr;
+  if (gl != isGL)
+    setViewport(gl ? static_cast<QWidget*>(new QGLWidget(QGLFormat(QGL::SampleBuffers))) : new QWidget());
+  // GL redraws everything anyway; the software path only repaints what changed.
+  setViewportUpdateMode(gl ? QGraphicsView::FullViewportUpdate : QGraphicsView::SmartViewportUpdate);
+}
 
 bool FlowView::s_blender = true;
 bool FlowView::s_trackpadScroll = true;
@@ -70,9 +111,16 @@ FlowView(QWidget *parent)
 
   setCacheMode(QGraphicsView::CacheBackground);
   
-  setViewport(new QGLWidget(QGLFormat(QGL::SampleBuffers)));
-  
-  setViewportUpdateMode(QGraphicsView::FullViewportUpdate);
+  s_views.insert(this);
+  connect(this, &QObject::destroyed, [this]() { s_views.erase(this); });
+  applyRenderMode();
+  _interactionTimer = new QTimer(this);
+  _interactionTimer->setSingleShot(true);
+  _interactionTimer->setInterval(150);
+  connect(_interactionTimer, &QTimer::timeout, [this]() {
+    setRenderHint(QPainter::Antialiasing, true);
+    viewport()->update();
+  });
  
   
 }
@@ -463,8 +511,32 @@ wheelEvent(QWheelEvent *event)
 
 void
 FlowView::
+beginInteraction()
+{
+  if (renderHints() & QPainter::Antialiasing)
+    setRenderHint(QPainter::Antialiasing, false);
+  _interactionTimer->start();
+}
+
+
+void
+FlowView::
+updateLevelOfDetail()
+{
+  if (!_scene)
+    return;
+  bool low = transform().m11() < lowDetailZoom;
+  _lowDetail = low;
+  for (auto &n : _scene->nodes())
+    n.second->nodeGraphicsObject().setLowDetail(low);
+}
+
+
+void
+FlowView::
 panByView(QPointF viewDelta)
 {
+  beginInteraction();
   // content follows the fingers / mouse: move the visible scene rect the other way
   QPointF d(-viewDelta.x() / transform().m11(), -viewDelta.y() / transform().m22());
   setSceneRect(sceneRect().translated(d.x(), d.y()));
@@ -478,7 +550,9 @@ zoomBy(double factor)
   double s = transform().m11() * factor;
   if (s > 2.0)  factor = 2.0 / transform().m11();     // same maximum as scaleUp()
   if (s < 0.05) factor = 0.05 / transform().m11();
+  beginInteraction();
   scale(factor, factor);                             // AnchorUnderMouse: zooms at the cursor
+  updateLevelOfDetail();
 }
 
 
@@ -497,6 +571,7 @@ frameAll()
   setTransformationAnchor(QGraphicsView::AnchorViewCenter);
   scale(fit / transform().m11(), fit / transform().m22());
   setTransformationAnchor(QGraphicsView::AnchorUnderMouse);
+  updateLevelOfDetail();
 }
 
 
@@ -512,7 +587,9 @@ scaleUp()
   if (t.m11() > 2.0)
     return;
 
+  beginInteraction();
   scale(factor, factor);
+  updateLevelOfDetail();
   
 }
 
@@ -524,7 +601,9 @@ scaleDown()
   double const step   = 1.2;
   double const factor = std::pow(step, -1.0);
 
+  beginInteraction();
   scale(factor, factor);
+  updateLevelOfDetail();
 }
 
 
@@ -974,6 +1053,35 @@ mouseReleaseEvent(QMouseEvent *event)
     return;
   }
   QGraphicsView::mouseReleaseEvent(event);
+}
+
+
+void
+FlowView::
+paintEvent(QPaintEvent *event)
+{
+  QElapsedTimer t;
+  t.start();
+  QGraphicsView::paintEvent(event);
+  _lastFrameMs = 0.8 * _lastFrameMs + 0.2 * (t.nsecsElapsed() / 1e6);   // smoothed; shown on the next frame
+}
+
+
+void
+FlowView::
+drawForeground(QPainter* painter, const QRectF& r)
+{
+  QGraphicsView::drawForeground(painter, r);
+  if (!s_showFrameTime)
+    return;
+  painter->save();
+  painter->resetTransform();
+  QString mode = qobject_cast<QGLWidget*>(viewport()) ? "OpenGL" : "software";
+  QString txt = QString("%1 ms/frame  (%2%3, %4 nodes)").arg(_lastFrameMs, 0, 'f', 1).arg(mode)
+                .arg(_lowDetail ? ", low detail" : "").arg(_scene ? (int)_scene->nodes().size() : 0);
+  painter->setPen(Qt::yellow);
+  painter->drawText(QPointF(10, 20), txt);
+  painter->restore();
 }
 
 
