@@ -44,7 +44,8 @@ public:
   /// blender: middle-drag / Alt+left-drag pans, Ctrl+(that) zooms, left-drag on empty space box-selects,
   /// Home frames all nodes. trackpadScroll: two-finger scroll pans and Ctrl+scroll (pinch) zooms;
   /// otherwise the wheel zooms at the cursor. blender=false keeps the original behaviour.
-  static void setNavigation(bool blender, bool trackpadScroll, double trackpadSpeed = 2.0);
+  /// trackpadSpeed scales trackpad pan; zoomSpeed scales zoom (wheel, Ctrl+scroll, pinch) and is capped per step.
+  static void setNavigation(bool blender, bool trackpadScroll, double trackpadSpeed = 4.0, double zoomSpeed = 1.0);
 
   /// Pan and zoom so every node is visible.
   void frameAll();
@@ -140,6 +141,8 @@ private:
   static bool s_blender;
   static bool s_trackpadScroll;
   static double s_trackpadSpeed;
+  static double s_zoomSpeed;
+  QString _lastWheel;           // raw last wheel event, shown with the frame-time overlay
 
   FlowScene* _scene;
 };

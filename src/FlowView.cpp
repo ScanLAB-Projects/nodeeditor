@@ -79,13 +79,15 @@ void FlowView::applyRenderMode()
 
 bool FlowView::s_blender = true;
 bool FlowView::s_trackpadScroll = true;
-double FlowView::s_trackpadSpeed = 2.0;
+double FlowView::s_trackpadSpeed = 4.0;
+double FlowView::s_zoomSpeed = 1.0;
 
-void FlowView::setNavigation(bool blender, bool trackpadScroll, double trackpadSpeed)
+void FlowView::setNavigation(bool blender, bool trackpadScroll, double trackpadSpeed, double zoomSpeed)
 {
   s_blender = blender;
   s_trackpadScroll = trackpadScroll;
   s_trackpadSpeed = trackpadSpeed;
+  s_zoomSpeed = zoomSpeed;
 }
 
 FlowView::
@@ -476,17 +478,22 @@ wheelEvent(QWheelEvent *event)
     // Trackpads send pixelDelta on macOS; over RDP they arrive as fine-grained angleDelta.
     QPointF d = !event->pixelDelta().isNull() ? QPointF(event->pixelDelta())
                                               : QPointF(event->angleDelta()) / 4.0;
-    if (s_trackpadScroll)
-      d *= s_trackpadSpeed;                            // Preferences > Navigation > Trackpad speed
+    _lastWheel = QString("wheel angle %1,%2 pixel %3,%4 %5").arg(event->angleDelta().x()).arg(event->angleDelta().y())
+                   .arg(event->pixelDelta().x()).arg(event->pixelDelta().y())
+                   .arg(event->modifiers() & Qt::ControlModifier ? "ctrl" : (event->modifiers() & Qt::ShiftModifier ? "shift" : ""));
     if (d.isNull())
     {
       event->ignore();
       return;
     }
     if (!s_trackpadScroll || (event->modifiers() & Qt::ControlModifier))
-      zoomBy(std::pow(1.2, d.y() / 30.0));             // one wheel notch (120) = 1.2x, like scaleUp()
+    {
+      // zoom: proportional to the step, capped at one wheel notch so coarse RDP steps can't jump
+      double steps = std::max(-1.0, std::min(1.0, d.y() / 30.0)) * s_zoomSpeed;
+      zoomBy(std::pow(1.1, steps));                   // one notch = 1.1x at zoom speed 1
+    }
     else
-      panByView(d);                                     // two-finger swipe pans
+      panByView(d * s_trackpadSpeed);                   // two-finger swipe pans (Trackpad speed)
     event->accept();
     return;
   }
@@ -1081,6 +1088,8 @@ drawForeground(QPainter* painter, const QRectF& r)
                 .arg(_lowDetail ? ", low detail" : "").arg(_scene ? (int)_scene->nodes().size() : 0);
   painter->setPen(Qt::yellow);
   painter->drawText(QPointF(10, 20), txt);
+  if (!_lastWheel.isEmpty())
+    painter->drawText(QPointF(10, 38), _lastWheel);
   painter->restore();
 }
 
