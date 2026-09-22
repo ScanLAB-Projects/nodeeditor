@@ -76,6 +76,8 @@ public:
   void setSizeY(int size) {sizeY = size;}
 
   void Collapse();
+  /// Collapse or expand (as the group's X button), keeping the button state in step.
+  void ToggleCollapse();
   
   QPointF portScenePosition(int i, PortType type) const;
   

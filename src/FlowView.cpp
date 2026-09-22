@@ -15,11 +15,17 @@
 #include <QDebug>
 #include <iostream>
 #include <cmath>
+#ifdef _WIN32
+// Just the one call, instead of <windows.h> (whose min/max/near/far macros break this file).
+extern "C" __declspec(dllimport) int __stdcall GetSystemMetrics(int nIndex);
+#endif
+#include <algorithm>
 
 #include "FlowScene.hpp"
 #include "DataModelRegistry.hpp"
 #include "Node.hpp"
 #include "Group.hpp"
+#include "GroupGraphicsObject.hpp"
 #include "NodeGraphicsObject.hpp"
 #include "ConnectionGraphicsObject.hpp"
 #include "StyleCollection.hpp"
@@ -32,6 +38,57 @@ using QtNodes::FlowScene;
 using QtNodes::Connection;
 using QtNodes::NodeConnectionInteraction;
 using QtNodes::NodeGraphicsObject;
+using QtNodes::GroupGraphicsObject;
+
+std::set<FlowView*> FlowView::s_views;
+int FlowView::s_renderMode = 0;
+bool FlowView::s_showFrameTime = false;
+
+static bool remoteDesktopSession()
+{
+#ifdef _WIN32
+  return GetSystemMetrics(0x1000 /* SM_REMOTESESSION */) != 0;
+#else
+  return false;
+#endif
+}
+
+void FlowView::setRenderMode(int mode)
+{
+  s_renderMode = mode;
+  for (FlowView *v : s_views)
+    v->applyRenderMode();
+}
+
+void FlowView::setShowFrameTime(bool show)
+{
+  s_showFrameTime = show;
+  for (FlowView *v : s_views)
+    v->viewport()->update();
+}
+
+void FlowView::applyRenderMode()
+{
+  bool gl = s_renderMode == 1 || (s_renderMode == 0 && !remoteDesktopSession());
+  bool isGL = qobject_cast<QGLWidget*>(viewport()) != nullptr;
+  if (gl != isGL)
+    setViewport(gl ? static_cast<QWidget*>(new QGLWidget(QGLFormat(QGL::SampleBuffers))) : new QWidget());
+  // GL redraws everything anyway; the software path only repaints what changed.
+  setViewportUpdateMode(gl ? QGraphicsView::FullViewportUpdate : QGraphicsView::SmartViewportUpdate);
+}
+
+bool FlowView::s_blender = true;
+bool FlowView::s_trackpadScroll = true;
+double FlowView::s_trackpadSpeed = 4.0;
+double FlowView::s_zoomSpeed = 2.0;
+
+void FlowView::setNavigation(bool blender, bool trackpadScroll, double trackpadSpeed, double zoomSpeed)
+{
+  s_blender = blender;
+  s_trackpadScroll = trackpadScroll;
+  s_trackpadSpeed = trackpadSpeed;
+  s_zoomSpeed = zoomSpeed;
+}
 
 FlowView::
 FlowView(QWidget *parent)
@@ -40,7 +97,7 @@ FlowView(QWidget *parent)
   , _deleteSelectionAction(Q_NULLPTR)
   , _scene(Q_NULLPTR)
 {
-  setDragMode(QGraphicsView::ScrollHandDrag);
+  setDragMode(s_blender ? QGraphicsView::RubberBandDrag : QGraphicsView::ScrollHandDrag);
   setRenderHint(QPainter::Antialiasing);
 
   auto const &flowViewStyle = StyleCollection::flowViewStyle();
@@ -56,9 +113,28 @@ FlowView(QWidget *parent)
 
   setCacheMode(QGraphicsView::CacheBackground);
   
-  setViewport(new QGLWidget(QGLFormat(QGL::SampleBuffers)));
-  
-  setViewportUpdateMode(QGraphicsView::FullViewportUpdate);
+  s_views.insert(this);
+  connect(this, &QObject::destroyed, [this]() { s_views.erase(this); });
+  applyRenderMode();
+  _interactionTimer = new QTimer(this);
+  _interactionTimer->setSingleShot(true);
+  _interactionTimer->setInterval(150);
+  connect(_interactionTimer, &QTimer::timeout, [this]() {
+    setRenderHint(QPainter::Antialiasing, true);
+    setZoomCache(false);
+    viewport()->update();
+  });
+
+  _zoomTimer = new QTimer(this);
+  _zoomTimer->setInterval(16);
+  connect(_zoomTimer, &QTimer::timeout, [this]() {
+    // ease: apply 35% of what's left each frame; finish when it's negligible
+    double step = std::abs(_pendingZoomLog) < 0.002 ? _pendingZoomLog : 0.35 * _pendingZoomLog;
+    _pendingZoomLog -= step;
+    zoomBy(std::exp(step));
+    if (_pendingZoomLog == 0.0)
+      _zoomTimer->stop();
+  });
  
   
 }
@@ -413,6 +489,31 @@ void
 FlowView::
 wheelEvent(QWheelEvent *event)
 {
+  if (s_blender)
+  {
+    // Trackpads send pixelDelta on macOS; over RDP they arrive as fine-grained angleDelta.
+    QPointF d = !event->pixelDelta().isNull() ? QPointF(event->pixelDelta())
+                                              : QPointF(event->angleDelta()) / 4.0;
+    _lastWheel = QString("wheel angle %1,%2 pixel %3,%4 %5").arg(event->angleDelta().x()).arg(event->angleDelta().y())
+                   .arg(event->pixelDelta().x()).arg(event->pixelDelta().y())
+                   .arg(event->modifiers() & Qt::ControlModifier ? "ctrl" : (event->modifiers() & Qt::ShiftModifier ? "shift" : ""));
+    if (d.isNull())
+    {
+      event->ignore();
+      return;
+    }
+    if (!s_trackpadScroll || (event->modifiers() & Qt::ControlModifier))
+    {
+      // zoom: proportional to the step, capped at one wheel notch so coarse RDP steps can't jump
+      double steps = std::max(-1.0, std::min(1.0, d.y() / 30.0)) * s_zoomSpeed;
+      zoomSmooth(std::pow(1.2, steps));               // one notch = 1.2x at zoom speed 1, animated
+    }
+    else
+      panByView(d * s_trackpadSpeed);                   // two-finger swipe pans (Trackpad speed)
+    event->accept();
+    return;
+  }
+
   QPoint delta = event->angleDelta();
 
   if (delta.y() == 0)
@@ -433,6 +534,100 @@ wheelEvent(QWheelEvent *event)
 
 void
 FlowView::
+beginInteraction()
+{
+  if (renderHints() & QPainter::Antialiasing)
+    setRenderHint(QPainter::Antialiasing, false);
+  _interactionTimer->start();
+}
+
+
+void
+FlowView::
+updateLevelOfDetail()
+{
+  if (!_scene)
+    return;
+  bool low = transform().m11() < lowDetailZoom;
+  _lowDetail = low;
+  for (auto &n : _scene->nodes())
+    n.second->nodeGraphicsObject().setLowDetail(low);
+}
+
+
+void
+FlowView::
+panByView(QPointF viewDelta)
+{
+  beginInteraction();
+  // content follows the fingers / mouse: move the visible scene rect the other way
+  QPointF d(-viewDelta.x() / transform().m11(), -viewDelta.y() / transform().m22());
+  setSceneRect(sceneRect().translated(d.x(), d.y()));
+}
+
+
+void
+FlowView::
+zoomBy(double factor)
+{
+  double s = transform().m11() * factor;
+  if (s > 2.0)  factor = 2.0 / transform().m11();     // same maximum as scaleUp()
+  if (s < 0.05) factor = 0.05 / transform().m11();
+  beginInteraction();
+  setZoomCache(true);
+  scale(factor, factor);                             // AnchorUnderMouse: zooms at the cursor
+  updateLevelOfDetail();
+}
+
+
+void
+FlowView::
+zoomSmooth(double factor)
+{
+  setZoomCache(true);
+  _pendingZoomLog += std::log(factor);
+  // don't queue up more than ~3 notches, so a burst of events can't run away
+  _pendingZoomLog = std::max(-0.55, std::min(0.55, _pendingZoomLog));
+  if (!_zoomTimer->isActive())
+    _zoomTimer->start();
+}
+
+
+void
+FlowView::
+setZoomCache(bool on)
+{
+  if (on == _zoomCache || !_scene)
+    return;
+  _zoomCache = on;
+  // Device cache is exact but is re-rendered at every zoom level; item cache just scales the image.
+  for (auto &n : _scene->nodes())
+    n.second->nodeGraphicsObject().setCacheMode(on ? QGraphicsItem::ItemCoordinateCache
+                                                    : QGraphicsItem::DeviceCoordinateCache);
+}
+
+
+void
+FlowView::
+frameAll()
+{
+  if (!_scene || _scene->items().isEmpty())
+    return;
+  QRectF r = _scene->itemsBoundingRect();
+  QPointF difference = r.center() - sceneRect().center();
+  setSceneRect(sceneRect().translated(difference.x(), difference.y()));
+  double fit = 0.9 * std::min(viewport()->width() / std::max(r.width(), 1.0),
+                              viewport()->height() / std::max(r.height(), 1.0));
+  fit = std::max(0.05, std::min(fit, 2.0));
+  setTransformationAnchor(QGraphicsView::AnchorViewCenter);
+  scale(fit / transform().m11(), fit / transform().m22());
+  setTransformationAnchor(QGraphicsView::AnchorUnderMouse);
+  updateLevelOfDetail();
+}
+
+
+void
+FlowView::
 scaleUp()
 {
   double const step   = 1.2;
@@ -443,7 +638,9 @@ scaleUp()
   if (t.m11() > 2.0)
     return;
 
+  beginInteraction();
   scale(factor, factor);
+  updateLevelOfDetail();
   
 }
 
@@ -455,7 +652,9 @@ scaleDown()
   double const step   = 1.2;
   double const factor = std::pow(step, -1.0);
 
+  beginInteraction();
   scale(factor, factor);
+  updateLevelOfDetail();
 }
 
 
@@ -501,14 +700,53 @@ void FlowView::duplicateSelectedNode()
 }
 
 
+bool
+FlowView::
+event(QEvent *event)
+{
+  // Tab collapses/expands the group under the mouse. Handled here because Qt would otherwise use
+  // Tab to move keyboard focus before keyPressEvent sees it.
+  if (event->type() == QEvent::KeyPress)
+  {
+    QKeyEvent *k = static_cast<QKeyEvent*>(event);
+    if (k->key() == Qt::Key_Tab && !(k->modifiers() & (Qt::ControlModifier | Qt::AltModifier)))
+    {
+      QPoint vp = viewport()->mapFromGlobal(QCursor::pos());
+      for (QGraphicsItem *item : items(vp))
+      {
+        for (QGraphicsItem *it = item; it; it = it->parentItem())
+        {
+          if (auto *g = dynamic_cast<GroupGraphicsObject*>(it))
+          {
+            g->ToggleCollapse();
+            return true;
+          }
+        }
+      }
+      return true;   // over empty space: swallow Tab rather than jump focus out of the editor
+    }
+  }
+  return QGraphicsView::event(event);
+}
+
+
+
 void
 FlowView::
 keyPressEvent(QKeyEvent *event)
 {
+  if (s_blender && event->key() == Qt::Key_Home)
+  {
+    frameAll();
+    event->accept();
+    return;
+  }
+
   switch (event->key())
   {
     case Qt::Key_Shift:
-      setDragMode(QGraphicsView::RubberBandDrag);
+      if (!s_blender)
+        setDragMode(QGraphicsView::RubberBandDrag);
       break;
     default:
       break;
@@ -525,7 +763,8 @@ keyReleaseEvent(QKeyEvent *event)
   switch (event->key())
   {
     case Qt::Key_Shift:
-      setDragMode(QGraphicsView::ScrollHandDrag);
+      if (!s_blender)
+        setDragMode(QGraphicsView::ScrollHandDrag);
       break;
 
     default:
@@ -539,6 +778,21 @@ void
 FlowView::
 mousePressEvent(QMouseEvent *event)
 {
+  if (s_blender)
+  {
+    setDragMode(QGraphicsView::RubberBandDrag);   // left-drag on empty space = box select
+    bool navButton = event->button() == Qt::MiddleButton ||
+                     (event->button() == Qt::LeftButton && (event->modifiers() & Qt::AltModifier));
+    if (navButton)
+    {
+      _navDrag = (event->modifiers() & Qt::ControlModifier) ? NavDrag::Zoom : NavDrag::Pan;
+      _navLastPos = event->pos();
+      event->accept();
+      return;
+    }
+  }
+  if (!s_blender && dragMode() == QGraphicsView::RubberBandDrag && !(event->modifiers() & Qt::ShiftModifier))
+    setDragMode(QGraphicsView::ScrollHandDrag);
   QGraphicsView::mousePressEvent(event);
   if (event->button() == Qt::LeftButton)
   {
@@ -551,8 +805,19 @@ void
 FlowView::
 mouseMoveEvent(QMouseEvent *event)
 {
+  if (_navDrag != NavDrag::None)
+  {
+    QPoint d = event->pos() - _navLastPos;
+    _navLastPos = event->pos();
+    if (_navDrag == NavDrag::Pan)
+      panByView(d);
+    else
+      zoomBy(std::pow(1.01, -d.y()));             // drag up = zoom in
+    event->accept();
+    return;
+  }
   QGraphicsView::mouseMoveEvent(event);
-  if (scene()->mouseGrabberItem() == nullptr && event->buttons() == Qt::LeftButton)
+  if (!s_blender && scene()->mouseGrabberItem() == nullptr && event->buttons() == Qt::LeftButton)
   {
     // Make sure shift is not being pressed
     if ((event->modifiers() & Qt::ShiftModifier) == 0)
@@ -561,6 +826,51 @@ mouseMoveEvent(QMouseEvent *event)
       setSceneRect(sceneRect().translated(difference.x(), difference.y()));
     }
   }
+}
+
+
+void
+FlowView::
+mouseReleaseEvent(QMouseEvent *event)
+{
+  if (_navDrag != NavDrag::None)
+  {
+    _navDrag = NavDrag::None;
+    event->accept();
+    return;
+  }
+  QGraphicsView::mouseReleaseEvent(event);
+}
+
+
+void
+FlowView::
+paintEvent(QPaintEvent *event)
+{
+  QElapsedTimer t;
+  t.start();
+  QGraphicsView::paintEvent(event);
+  _lastFrameMs = 0.8 * _lastFrameMs + 0.2 * (t.nsecsElapsed() / 1e6);   // smoothed; shown on the next frame
+}
+
+
+void
+FlowView::
+drawForeground(QPainter* painter, const QRectF& r)
+{
+  QGraphicsView::drawForeground(painter, r);
+  if (!s_showFrameTime)
+    return;
+  painter->save();
+  painter->resetTransform();
+  QString mode = qobject_cast<QGLWidget*>(viewport()) ? "OpenGL" : "software";
+  QString txt = QString("%1 ms/frame  (%2%3, %4 nodes)").arg(_lastFrameMs, 0, 'f', 1).arg(mode)
+                .arg(_lowDetail ? ", low detail" : "").arg(_scene ? (int)_scene->nodes().size() : 0);
+  painter->setPen(Qt::yellow);
+  painter->drawText(QPointF(10, 20), txt);
+  if (!_lastWheel.isEmpty())
+    painter->drawText(QPointF(10, 38), _lastWheel);
+  painter->restore();
 }
 
 

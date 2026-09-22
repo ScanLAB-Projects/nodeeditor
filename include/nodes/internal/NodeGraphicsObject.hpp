@@ -38,6 +38,9 @@ public:
   FlowScene&
   flowScene();
 
+  /// Zoomed-out drawing: hide the embedded widget (the most expensive thing to draw).
+  void setLowDetail(bool low);
+
   QRectF
   boundingRect() const override;
 
