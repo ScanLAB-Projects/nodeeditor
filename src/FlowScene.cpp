@@ -4,6 +4,7 @@
 #include <stdexcept>
 #include <set>
 #include <tuple>
+#include <algorithm>
 
 #include <QtWidgets/QGraphicsSceneMoveEvent>
 #include <QtWidgets/QFileDialog>
@@ -20,6 +21,7 @@
 
 #include "Node.hpp"
 #include "Group.hpp"
+#include "GroupGraphicsObject.hpp"
 #include "NodeGraphicsObject.hpp"
 
 #include "NodeGraphicsObject.hpp"
@@ -59,15 +61,13 @@ FlowScene(std::shared_ptr<DataModelRegistry> registry)
       UndoRedoAction(
         [this, id, oldPosition](void *)
         {
-          UniqueNode n = _nodes[id];
-          n->nodeGraphicsObject().setPos(oldPosition);
+          // the node may have been deleted (and restored under another id) since
+          if(Node* n = nodeById(id)) n->nodeGraphicsObject().setPos(oldPosition);
           return 0;
         },
         [this, id, newPosition](void *)
         {
-
-          UniqueNode n = _nodes[id];
-          n->nodeGraphicsObject().setPos(newPosition);
+          if(Node* n = nodeById(id)) n->nodeGraphicsObject().setPos(newPosition);
           return 0;
         },
         "Moved Node " + n.nodeDataModel()->name()
@@ -81,15 +81,19 @@ FlowScene(std::shared_ptr<DataModelRegistry> registry)
     resolveGroups(g);
     
     
+    // by id: the group may have been deleted since (a restored group gets a new id, so this then does nothing)
+    QUuid id = g.id();
     AddAction(UndoRedoAction(
-      [&g, oldPosition](void *ptr)
+      [this, id, oldPosition](void *ptr)
       {
-        g.groupGraphicsObject().setPos(oldPosition);
+        auto it = _groups.find(id);
+        if(it != _groups.end()) it->second->groupGraphicsObject().setPos(oldPosition);
         return 0;
       },
-      [&g, newPosition](void *ptr)
+      [this, id, newPosition](void *ptr)
       {
-        g.groupGraphicsObject().setPos(newPosition);
+        auto it = _groups.find(id);
+        if(it != _groups.end()) it->second->groupGraphicsObject().setPos(newPosition);
         return 0;
       },
       "Moved Group " + g.GetName()
@@ -176,13 +180,19 @@ restoreConnection(QJsonObject const &connectionJson)
   PortIndex portIndexIn  = connectionJson["in_index"].toInt();
   PortIndex portIndexOut = connectionJson["out_index"].toInt();
 
-  auto nodeIn  = _nodes[nodeInId].get();
-  auto nodeOut = _nodes[nodeOutId].get();
+  auto nodeIn  = nodeById(nodeInId);
+  auto nodeOut = nodeById(nodeOutId);
+  if(!nodeIn || !nodeOut)
+  {
+    qWarning() << "FlowScene: skipped a connection to a missing node";
+    return nullptr;
+  }
 
   std::vector<NodeState::ConnectionPtrSet> connIn = nodeIn->nodeState().getEntries(PortType::In);
   std::vector<NodeState::ConnectionPtrSet> connOut = nodeOut->nodeState().getEntries(PortType::Out);
   int numConnectionsIn = connIn.size();
   int numConnectionsOut = connOut.size();
+  if(numConnectionsIn == 0 || numConnectionsOut == 0) return nullptr;
 
   portIndexIn = std::min(numConnectionsIn - 1, portIndexIn);
   portIndexOut = std::min(numConnectionsOut - 1, portIndexOut);
@@ -200,8 +210,9 @@ void FlowScene::pasteConnection(QJsonObject const &connectionJson, QUuid newIn, 
   PortIndex portIndexIn  = connectionJson["in_index"].toInt();
   PortIndex portIndexOut = connectionJson["out_index"].toInt();
 
-  auto nodeIn  = _nodes[newIn].get();
-  auto nodeOut = _nodes[newOut].get();
+  auto nodeIn  = nodeById(newIn);
+  auto nodeOut = nodeById(newOut);
+  if(!nodeIn || !nodeOut) return;
 
   if (!nodeIn || !nodeOut)
       return;
@@ -211,13 +222,38 @@ void FlowScene::pasteConnection(QJsonObject const &connectionJson, QUuid newIn, 
 }
 
 
+// A collapsed group keeps raw pointers to the wires crossing its edge (for its ports and Ctrl+C). Before such a wire
+// is deleted the group is expanded, and afterwards collapsed again: collapsing re-reads the wires from the live graph.
+std::vector<GroupGraphicsObject*>
+FlowScene::
+expandGroupsOf(Connection& connection)
+{
+  std::vector<GroupGraphicsObject*> expanded;
+  for(PortType t : {PortType::In, PortType::Out})
+  {
+    Group* g = connection.getGroup(t);
+    if(g && g->groupGraphicsObject().isCollapsed())
+    {
+      GroupGraphicsObject* ggo = &g->groupGraphicsObject();
+      if(std::find(expanded.begin(), expanded.end(), ggo) == expanded.end())
+      {
+        ggo->ToggleCollapse();
+        expanded.push_back(ggo);
+      }
+    }
+  }
+  return expanded;
+}
+
 void
 FlowScene::
 deleteConnection(Connection& connection)
 {
+  std::vector<GroupGraphicsObject*> expanded = expandGroupsOf(connection);
   connectionDeleted(connection);
   connection.removeFromNodes();
   _connections.erase(connection.id());
+  for(GroupGraphicsObject* ggo : expanded) ggo->ToggleCollapse();
 }
 
 void
@@ -225,8 +261,10 @@ FlowScene::
 deleteConnection(Connection* connection)
 {
   // connectionDeleted(connection);
+  std::vector<GroupGraphicsObject*> expanded = expandGroupsOf(*connection);
   connection->removeFromNodes();
   _connections.erase(connection->id());
+  for(GroupGraphicsObject* ggo : expanded) ggo->ToggleCollapse();
 }
 
 
@@ -234,8 +272,10 @@ void
 FlowScene::
 deleteConnectionWithID(QUuid id)
 {
-  Connection *connection = _connections[id].get();
-  deleteConnection(connection);
+  // undo of a new wire: the wire may be gone, or re-created under another id by an earlier undo
+  auto it = _connections.find(id);
+  if(it == _connections.end()) return;
+  deleteConnection(it->second.get());
 }
 
 
@@ -432,11 +472,22 @@ removeNode(Node& node)
 
 
 
+Node*
+FlowScene::
+nodeById(QUuid const& id) const
+{
+  auto it = _nodes.find(id);
+  return it == _nodes.end() ? nullptr : it->second.get();
+}
+
+
 void
 FlowScene::
 removeNodeWithID(QUuid id)
 {
-  UniqueNode nodePtr = _nodes[id];
+  auto found = _nodes.find(id);
+  if(found == _nodes.end()) return;   // already gone (undo/redo after other deletions)
+  UniqueNode nodePtr = found->second;
   Node &node = *nodePtr;
   // call signal
   nodeDeleted(node);
@@ -468,6 +519,8 @@ removeGroup(Group& group)
 {
 
 	GroupGraphicsObject &ggo = group.groupGraphicsObject();
+	// a collapsed group hides its nodes and its wires point at it: expand it first
+	if(ggo.isCollapsed()) ggo.ToggleCollapse();
 	for(int i=ggo.childItems().size()-1; i>=0; i--)
 	{
 		QGraphicsItem *child  = ggo.childItems()[i];
@@ -651,28 +704,19 @@ resolveGroups(Group& group) {
   QList<QGraphicsItem*>others =  collidingItems(&ggo, Qt::IntersectsItemBoundingRect);
   for(int i=0; i<others.size(); i++) {
     QGraphicsItem* other = others[i];
+    // Only nodes become children of a group. Groups are never nested (in each other or in a node): a group that
+    // owns another group as a Qt child item was deleted twice when either went away (code review 2026-09-22 §2.2).
     NodeGraphicsObject* ngo = dynamic_cast<NodeGraphicsObject*>(other);
-    GroupGraphicsObject* ggo1 = dynamic_cast<GroupGraphicsObject*>(other);
-    if(ngo || ggo1) {
+    if(ngo) {
       QRectF otherRect = other->mapRectToScene(other->boundingRect());
       
       //checks what is inside
       if(groupRect.contains(otherRect)) {
         QPointF scenePos = other->scenePos();
         QPointF parentPos = ggo.mapFromScene(scenePos);
-        if(!other->isAncestorOf(&ggo)) {
-          other->setParentItem(&ggo);
-          other->setPos(parentPos);
-        }
-      } else if(otherRect.contains(groupRect)) { // Checks inside of what it is
-        QPointF scenePos = ggo.scenePos();
-        QPointF parentPos = other->mapFromScene(scenePos);
-        if(!ggo.isAncestorOf(other)) {
-          ggo.setParentItem(other);
-          ggo.setPos(parentPos);
-        }
+        other->setParentItem(&ggo);
+        other->setPos(parentPos);
       }
-    } else {
     }
 
 
@@ -932,14 +976,22 @@ loadFromMemory(const QByteArray& data)
     restoreNode(nodesJsonArray[i].toObject());
   }
 
-  QJsonArray connectionJsonArray = jsonDocument["connections"].toArray();
+  // wires whose nodes aren't in the sheet (a hand-edited or generated file) are left out
+  QJsonArray connectionJsonArray;
+  for (auto const &c : jsonDocument["connections"].toArray())
+  {
+    QJsonObject o = c.toObject();
+    if (nodeById(QUuid(o["in_id"].toString())) && nodeById(QUuid(o["out_id"].toString())))
+      connectionJsonArray.append(o);
+    else
+      qWarning() << "FlowScene: skipped a connection to a missing node";
+  }
 
   for (int i = 0; i < connectionJsonArray.size(); ++i)
   {
     QJsonObject jsonObject = connectionJsonArray[i].toObject();
     QUuid nodeInId = QUuid(jsonObject["in_id"].toString());
-    auto nodeIn = _nodes[nodeInId].get();    
-    nodeIn->targetInputConnections++;
+    nodeById(nodeInId)->targetInputConnections++;
   }
 
   std::stable_sort( connectionJsonArray.begin( ), connectionJsonArray.end( ), [this]( const auto& lhs, const auto& rhs )
@@ -950,7 +1002,7 @@ loadFromMemory(const QByteArray& data)
       QJsonObject objA = lhs.toObject();
       QUuid nodeInId  = QUuid(objA["in_id"].toString());
       PortIndex portIndexIn  = objA["in_index"].toInt();
-      auto nodeIn  = _nodes[nodeInId].get();
+      auto nodeIn  = nodeById(nodeInId);
       NodeGraphicsObject & ngo = nodeIn->nodeGraphicsObject();
       posA = ngo.scenePos(); 
 
@@ -962,7 +1014,7 @@ loadFromMemory(const QByteArray& data)
       QJsonObject objB = rhs.toObject();
       QUuid nodeInId  = QUuid(objB["in_id"].toString());
       PortIndex portIndexIn  = objB["in_index"].toInt();
-      auto nodeIn  = _nodes[nodeInId].get();
+      auto nodeIn  = nodeById(nodeInId);
       NodeGraphicsObject & ngo = nodeIn->nodeGraphicsObject();
       posB = ngo.scenePos();        
       

@@ -12,6 +12,7 @@
 #include "Export.hpp"
 #include "DataModelRegistry.hpp"
 #include <stack>
+#include <vector>
 
 namespace QtNodes
 {
@@ -20,6 +21,7 @@ class NodeDataModel;
 class FlowItemInterface;
 class Node;
 class Group;
+class GroupGraphicsObject;
 class NodeGraphicsObject;
 class Connection;
 class ConnectionGraphicsObject;
@@ -79,6 +81,9 @@ public:
   void deleteConnection(Connection* connection);
   void deleteConnectionWithID(QUuid id);
 
+  /// Expands the collapsed groups a wire is attached to; returns them so they can be collapsed again
+  std::vector<GroupGraphicsObject*> expandGroupsOf(Connection& connection);
+
   Node&createNode(std::unique_ptr<NodeDataModel> && dataModel);
   
   Node&createNodeWithID(std::unique_ptr<NodeDataModel> && dataModel, QUuid id);
@@ -98,6 +103,9 @@ public:
   void removeNode(Node& node);
 
   void removeNodeWithID(QUuid id);
+
+  /// The node with this id, or nullptr (unlike _nodes[id], which inserts an empty entry)
+  Node* nodeById(QUuid const& id) const;
 
   void removeGroup(Group& node);
 
