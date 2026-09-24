@@ -212,8 +212,6 @@ void FlowScene::pasteConnection(QJsonObject const &connectionJson, QUuid newIn, 
 
   auto nodeIn  = nodeById(newIn);
   auto nodeOut = nodeById(newOut);
-  if(!nodeIn || !nodeOut) return;
-
   if (!nodeIn || !nodeOut)
       return;
 
