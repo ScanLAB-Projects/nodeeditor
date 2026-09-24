@@ -35,6 +35,7 @@
 using QtNodes::FlowScene;
 using QtNodes::Node;
 using QtNodes::Group;
+using QtNodes::GroupGraphicsObject;
 using QtNodes::NodeGraphicsObject;
 using QtNodes::Connection;
 using QtNodes::DataModelRegistry;
