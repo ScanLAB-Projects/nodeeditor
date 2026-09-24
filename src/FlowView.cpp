@@ -78,7 +78,7 @@ void FlowView::applyRenderMode()
 }
 
 bool FlowView::s_blender = true;
-bool FlowView::s_trackpadScroll = true;
+bool FlowView::s_trackpadScroll = false;   // default: the mouse wheel zooms (Renderella Preferences > Navigation)
 double FlowView::s_trackpadSpeed = 4.0;
 double FlowView::s_zoomSpeed = 2.0;
 
